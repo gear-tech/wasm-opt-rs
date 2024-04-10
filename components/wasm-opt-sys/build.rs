@@ -5,14 +5,42 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 fn main() -> anyhow::Result<()> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
+    let binaryen_dir = get_binaryen_dir(&manifest_dir)?;
+    let src_dir = binaryen_dir.join("src");
+    let tools_dir = src_dir.join("tools");
+
+    let target = std::env::var("TARGET")?;
+    if target == "x86_64-unknown-linux-gnu" || target == "aarch64-apple-darwin" {
+        let manifest_dir = Path::new(&manifest_dir);
+        let prebuilt_dir = {
+            let mut prebuilt_dir = manifest_dir.join("prebuilt");
+            prebuilt_dir.push(target);
+
+            prebuilt_dir
+        };
+
+        if Path::new(&format!("{}/libwasm-opt-cc.a", prebuilt_dir.display())).exists() {
+            // Set up cxx's include path so that wasm-opt-cxx-sys's C++ header can
+            // include from these same dirs.
+            CFG.exported_header_dirs.push(&src_dir);
+            CFG.exported_header_dirs.push(&tools_dir);
+            CFG.exported_header_dirs.push(&prebuilt_dir);
+
+            let mut _builder = cxx_build::bridge("src/lib.rs");
+
+            println!("cargo:rustc-link-lib=static=wasm-opt-cc");
+            println!("cargo:rustc-link-search=native={}", prebuilt_dir.display());
+
+            return Ok(());
+        }
+    }
+
     check_cxx17_support()?;
 
     let output_dir = std::env::var("OUT_DIR")?;
     let output_dir = Path::new(&output_dir);
 
-    let binaryen_dir = get_binaryen_dir()?;
-
-    let src_dir = binaryen_dir.join("src");
     let src_files = get_src_files(&src_dir)?;
 
     #[cfg(feature = "dwarf")]
@@ -20,7 +48,6 @@ fn main() -> anyhow::Result<()> {
     #[cfg(feature = "dwarf")]
     let llvm_files = get_llvm_files(&llvm_dir)?;
 
-    let tools_dir = src_dir.join("tools");
     let wasm_opt_src = tools_dir.join("wasm-opt.cpp");
     let wasm_opt_src = get_converted_wasm_opt_cpp(&wasm_opt_src)?;
 
@@ -97,9 +124,8 @@ fn main() -> anyhow::Result<()> {
 /// The packaged subdirectories are put in place by `publish.sh`.
 ///
 /// The packaged source is pre-processed to remove Binaryen's large test suite.
-fn get_binaryen_dir() -> anyhow::Result<PathBuf> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
-    let manifest_dir = Path::new(&manifest_dir);
+fn get_binaryen_dir(manifest_dir: &str) -> anyhow::Result<PathBuf> {
+    let manifest_dir = Path::new(manifest_dir);
     let binaryen_packaged_dir = manifest_dir.join("binaryen");
     let binaryen_submodule_dir = manifest_dir.join("../../binaryen");
 
